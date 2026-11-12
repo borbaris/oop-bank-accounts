@@ -1,0 +1,284 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import datetime, time
+from decimal import Decimal
+from typing import Any, ClassVar
+
+from .accounts import AccountStatus, BankAccount, Currency
+from .client import Client
+from .exceptions import (
+    AccessDeniedError,
+    AccountNotFoundError,
+    AuthenticationError,
+    ClientBlockedError,
+    ClientError,
+    ClientNotFoundError,
+    InvalidOperationError,
+    OperatingHoursError,
+)
+from .investment import InvestmentAccount
+from .premium import PremiumAccount
+from .savings import SavingsAccount
+from .security import (
+    PBKDF2_ITERATIONS,
+    ActivityKind,
+    SuspiciousActivity,
+    hash_password,
+    validate_password,
+    verify_password,
+)
+
+
+class Bank:
+    MAX_LOGIN_ATTEMPTS: ClassVar[int] = 3
+    NIGHT_START: ClassVar[time] = time(0, 0)
+    NIGHT_END: ClassVar[time] = time(5, 0)
+    PASSWORD_ITERATIONS: ClassVar[int] = PBKDF2_ITERATIONS
+
+    ACCOUNT_TYPES: ClassVar[dict[str, type[BankAccount]]] = {
+        "bank": BankAccount,
+        "savings": SavingsAccount,
+        "premium": PremiumAccount,
+        "investment": InvestmentAccount,
+    }
+
+    def __init__(self, name: str, *, clock: Callable[[], datetime] = datetime.now) -> None:
+        """clock — откуда банк берёт текущее время. В тестах подменяем на фиксированное."""
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Название банка должно быть непустой строкой")
+        self._name = name.strip()
+        self._clock = clock
+
+        self._clients: dict[str, Client] = {}
+        self._accounts: dict[str, BankAccount] = {}
+        self._account_owner: dict[str, str] = {}
+        self._credentials: dict[str, tuple[bytes, bytes]] = {}
+        self._failed_logins: dict[str, int] = {}
+        self._sessions: set[str] = set()
+        self._suspicious: list[SuspiciousActivity] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def add_client(self, client: Client, password: str) -> Client:
+        if not isinstance(client, Client):
+            raise TypeError(f"Ожидался Client, получено {type(client).__name__}")
+        if client.client_id in self._clients:
+            raise ClientError(f"Клиент с ID {client.client_id} уже есть в банке")
+        validate_password(password)
+
+        self._credentials[client.client_id] = hash_password(
+            password, iterations=self.PASSWORD_ITERATIONS
+        )
+        self._clients[client.client_id] = client
+        self._failed_logins[client.client_id] = 0
+        return client
+
+    def get_client(self, client_id: str) -> Client:
+        client = self._clients.get(client_id)
+        if client is None:
+            raise ClientNotFoundError(f"Клиент {client_id!r} не найден")
+        return client
+
+    def unblock_client(self, client_id: str) -> None:
+        """Ручная разблокировка сотрудником банка."""
+        client = self.get_client(client_id)
+        client.unblock()
+        self._failed_logins[client_id] = 0
+
+    def authenticate_client(self, client_id: str, password: str) -> Client:
+        if not isinstance(password, str):
+            raise TypeError(f"Пароль должен быть строкой, получено {type(password).__name__}")
+        client = self._clients.get(client_id)
+        if client is None:
+            self._flag(ActivityKind.UNKNOWN_CLIENT_LOGIN, client_id, "вход с несуществующим ID")
+            raise AuthenticationError("Неверный ID клиента или пароль")
+
+        if client.is_blocked:
+            self._flag(ActivityKind.BLOCKED_CLIENT_LOGIN, client_id, "вход в заблокированный профиль")
+            raise ClientBlockedError(f"Клиент {client_id} заблокирован — обратитесь в банк")
+
+        salt, expected = self._credentials[client_id]
+        if verify_password(password, salt, expected, self.PASSWORD_ITERATIONS):
+            self._failed_logins[client_id] = 0
+            self._sessions.add(client_id)
+            return client
+
+        self._failed_logins[client_id] += 1
+        attempts = self._failed_logins[client_id]
+        self._flag(
+            ActivityKind.FAILED_LOGIN, client_id,
+            f"неверный пароль, попытка {attempts}/{self.MAX_LOGIN_ATTEMPTS}",
+        )
+        if attempts >= self.MAX_LOGIN_ATTEMPTS:
+            client.block()
+            self._sessions.discard(client_id)
+            self._flag(ActivityKind.CLIENT_BLOCKED, client_id, f"{attempts} неверных пароля подряд")
+            raise ClientBlockedError(
+                f"{attempts} неверных попытки — клиент {client_id} заблокирован"
+            )
+        raise AuthenticationError(
+            f"Неверный ID клиента или пароль. Осталось попыток: "
+            f"{self.MAX_LOGIN_ATTEMPTS - attempts}"
+        )
+
+    def logout(self, client_id: str) -> None:
+        self._sessions.discard(client_id)
+
+    def is_authenticated(self, client_id: str) -> bool:
+        return client_id in self._sessions
+
+    def open_account(
+        self, client_id: str, account_type: str = "bank", **options: Any
+    ) -> BankAccount:
+        self._ensure_operating_hours("Открытие счёта", client_id)
+        client = self._require_session(client_id)
+        account_class = self._resolve_account_type(account_type)
+
+        account = account_class(client.owner, **options)
+        if account.account_number in self._accounts:
+            raise InvalidOperationError(f"Счёт {account.account_number} уже существует")
+
+        self._accounts[account.account_number] = account
+        self._account_owner[account.account_number] = client_id
+        client.add_account_number(account.account_number)
+        return account
+
+    def close_account(self, client_id: str, account_number: str) -> None:
+        self._ensure_operating_hours("Закрытие счёта", client_id)
+        self._require_session(client_id)
+        account = self._get_owned_account(client_id, account_number)
+        account.close()
+
+    def freeze_account(self, account_number: str) -> None:
+        self.get_account(account_number).freeze()
+
+    def unfreeze_account(self, account_number: str) -> None:
+        account = self.get_account(account_number)
+        self._ensure_operating_hours("Разморозка счёта", self._account_owner[account.account_number])
+        account.unfreeze()
+
+    def get_account(self, account_number: str) -> BankAccount:
+        account = self._accounts.get(self._normalize_number(account_number))
+        if account is None:
+            raise AccountNotFoundError(f"Счёт {account_number!r} не найден")
+        return account
+
+    def search_accounts(
+        self,
+        *,
+        client_id: str | None = None,
+        account_type: str | type[BankAccount] | None = None,
+        status: AccountStatus | str | None = None,
+        currency: Currency | str | None = None,
+        min_balance: Decimal | int | float | str | None = None,
+        max_balance: Decimal | int | float | str | None = None,
+    ) -> list[BankAccount]:
+        if client_id is not None:
+            self.get_client(client_id)
+        wanted_type = None if account_type is None else self._resolve_account_type(account_type)
+        wanted_status = None if status is None else AccountStatus.parse(status)
+        wanted_currency = None if currency is None else Currency.parse(currency)
+        low = None if min_balance is None else Decimal(str(min_balance))
+        high = None if max_balance is None else Decimal(str(max_balance))
+
+        found = []
+        for number, account in self._accounts.items():
+            if client_id is not None and self._account_owner[number] != client_id:
+                continue
+            if wanted_type is not None and type(account) is not wanted_type:
+                continue
+            if wanted_status is not None and account.status is not wanted_status:
+                continue
+            if wanted_currency is not None and account.currency is not wanted_currency:
+                continue
+            if low is not None and account.balance < low:
+                continue
+            if high is not None and account.balance > high:
+                continue
+            found.append(account)
+        return found
+
+    def get_total_balance(self) -> dict[Currency, Decimal]:
+        totals: dict[Currency, Decimal] = {}
+        for account in self._accounts.values():
+            totals[account.currency] = (
+                totals.get(account.currency, Decimal("0.00")) + account.total_value
+            )
+        return totals
+
+    def get_clients_ranking(
+        self, currency: Currency | str = Currency.RUB
+    ) -> list[tuple[Client, Decimal]]:
+        wanted = Currency.parse(currency)
+        totals: dict[str, Decimal] = {}
+        for number, account in self._accounts.items():
+            if account.currency is not wanted:
+                continue
+            owner_id = self._account_owner[number]
+            totals[owner_id] = totals.get(owner_id, Decimal("0.00")) + account.total_value
+
+        ranking = [(self._clients[cid], total) for cid, total in totals.items()]
+        ranking.sort(key=lambda item: (-item[1], item[0].full_name))
+        return ranking
+
+    @property
+    def suspicious_activities(self) -> tuple[SuspiciousActivity, ...]:
+        return tuple(self._suspicious)
+
+    def get_suspicious_activities(self, client_id: str | None = None) -> list[SuspiciousActivity]:
+        return [a for a in self._suspicious if client_id is None or a.client_id == client_id]
+
+    def _flag(self, kind: ActivityKind, client_id: str | None, details: str) -> None:
+        self._suspicious.append(SuspiciousActivity(self._clock(), kind, client_id, details))
+
+    def _ensure_operating_hours(self, action: str, client_id: str | None) -> None:
+        now = self._clock()
+        if self.NIGHT_START <= now.time() < self.NIGHT_END:
+            self._flag(ActivityKind.NIGHT_OPERATION, client_id, f"{action} в {now:%H:%M}")
+            raise OperatingHoursError(
+                f"{action}: операции недоступны с 00:00 до 05:00 (сейчас {now:%H:%M})"
+            )
+
+    def _require_session(self, client_id: str) -> Client:
+        client = self.get_client(client_id)
+        if client.is_blocked:
+            raise ClientBlockedError(f"Клиент {client_id} заблокирован")
+        if client_id not in self._sessions:
+            self._flag(ActivityKind.UNAUTHENTICATED_OPERATION, client_id, "операция без входа")
+            raise AccessDeniedError("Сначала войдите: authenticate_client()")
+        return client
+
+    def _get_owned_account(self, client_id: str, account_number: str) -> BankAccount:
+        account = self.get_account(account_number)
+        if self._account_owner[account.account_number] != client_id:
+            self._flag(
+                ActivityKind.FOREIGN_ACCOUNT_ACCESS, client_id,
+                f"попытка доступа к чужому счёту {account.masked_number}",
+            )
+            raise AccessDeniedError(f"Счёт {account.masked_number} принадлежит другому клиенту")
+        return account
+
+    def _resolve_account_type(self, account_type: str | type[BankAccount]) -> type[BankAccount]:
+        if isinstance(account_type, type) and account_type in self.ACCOUNT_TYPES.values():
+            return account_type
+        if isinstance(account_type, str) and account_type.strip().lower() in self.ACCOUNT_TYPES:
+            return self.ACCOUNT_TYPES[account_type.strip().lower()]
+        allowed = ", ".join(self.ACCOUNT_TYPES)
+        raise InvalidOperationError(f"Неизвестный тип счёта {account_type!r}. Допустимые: {allowed}")
+
+    @staticmethod
+    def _normalize_number(account_number: Any) -> str:
+        if not isinstance(account_number, str):
+            raise TypeError(
+                f"Номер счёта должен быть строкой, получено {type(account_number).__name__}"
+            )
+        return "".join(account_number.split()).upper()
+
+    def __str__(self) -> str:
+        return (
+            f"Bank «{self._name}» | Клиентов: {len(self._clients)} | "
+            f"Счетов: {len(self._accounts)} | Подозрительных событий: {len(self._suspicious)}"
+        )

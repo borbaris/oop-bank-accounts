@@ -3,8 +3,16 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-class AccountError(Exception):
+class BankError(Exception):
+    """Корень всех ошибок банковской системы."""
+
+
+class AccountError(BankError):
     """Базовое исключение для всех ошибок счёта."""
+
+
+class AccountNotFoundError(AccountError):
+    """Счёта с таким номером нет в банке."""
 
 
 class AccountStatusError(AccountError):
@@ -57,3 +65,31 @@ class WithdrawalLimitExceededError(InvalidOperationError):
             f"Превышен лимит снятия: максимум {limit} {currency} за операцию, "
             f"запрошено {requested} {currency}"
         )
+
+
+class ClientError(BankError):
+    """Базовое исключение для ошибок клиента."""
+
+
+class UnderageClientError(ClientError):
+    """Клиенту меньше 18 лет."""
+
+
+class ClientNotFoundError(ClientError):
+    """Клиента с таким ID нет в банке."""
+
+
+class ClientBlockedError(ClientError):
+    """Клиент заблокирован (например, после 3 неверных паролей)."""
+
+
+class AuthenticationError(ClientError):
+    """Неверный ID клиента или пароль."""
+
+
+class AccessDeniedError(ClientError):
+    """Нет входа в систему или попытка тронуть чужой счёт."""
+
+
+class OperatingHoursError(BankError):
+    """Операция запрещена в ночное время (00:00–05:00)."""

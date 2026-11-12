@@ -277,6 +277,11 @@ class BankAccount(AbstractAccount):
     def withdrawal_limit(self) -> Decimal:
         return self.WITHDRAWAL_LIMIT
 
+    @property
+    def total_value(self) -> Decimal:
+        """Сколько всего денег клиента на счёте. InvestmentAccount добавляет портфель."""
+        return self._balance
+
     def deposit(self, amount: Decimal | int | float | str) -> Decimal:
         self._ensure_active()
         value = self._validate_amount(amount)
