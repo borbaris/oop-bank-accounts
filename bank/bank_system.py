@@ -133,32 +133,58 @@ class Bank:
     def open_account(
         self, client_id: str, account_type: str = "bank", **options: Any
     ) -> BankAccount:
-        self._ensure_operating_hours("Открытие счёта", client_id)
-        client = self._require_session(client_id)
+        self._authorize(client_id, "Открытие счёта")
+        client = self.get_client(client_id)
         account_class = self._resolve_account_type(account_type)
 
         account = account_class(client.owner, **options)
         if account.account_number in self._accounts:
             raise InvalidOperationError(f"Счёт {account.account_number} уже существует")
 
+        account.attach_security(
+            lambda action, by_client: self._authorize(client_id, action, by_client=by_client)
+        )
         self._accounts[account.account_number] = account
         self._account_owner[account.account_number] = client_id
         client.add_account_number(account.account_number)
         return account
 
-    def close_account(self, client_id: str, account_number: str) -> None:
-        self._ensure_operating_hours("Закрытие счёта", client_id)
-        self._require_session(client_id)
+    def close_account(
+        self, client_id: str, account_number: str, *, transfer_to: str | None = None
+    ) -> Decimal:
+        self._authorize(client_id, "Закрытие счёта")
         account = self._get_owned_account(client_id, account_number)
-        account.close()
+
+        if transfer_to is None:
+            if account.balance > 0:
+                raise InvalidOperationError(
+                    f"На счёте {account.masked_number} остаток {account.balance} "
+                    f"{account.currency} — укажите transfer_to=<номер вашего счёта>"
+                )
+            account.close()
+            return Decimal("0.00")
+
+        target = self._get_owned_account(client_id, transfer_to)
+        if target is account:
+            raise InvalidOperationError("Нельзя перевести остаток на закрываемый счёт")
+        if target.currency is not account.currency:
+            raise InvalidOperationError(
+                f"Валюта счёта {target.masked_number} ({target.currency}) не совпадает "
+                f"с закрываемым ({account.currency})"
+            )
+        if target.status is not AccountStatus.ACTIVE:
+            raise InvalidOperationError(f"Счёт {target.masked_number} не активен")
+
+        payout = account.close_with_payout()
+        if payout > 0:
+            target.deposit(payout)
+        return payout
 
     def freeze_account(self, account_number: str) -> None:
         self.get_account(account_number).freeze()
 
     def unfreeze_account(self, account_number: str) -> None:
-        account = self.get_account(account_number)
-        self._ensure_operating_hours("Разморозка счёта", self._account_owner[account.account_number])
-        account.unfreeze()
+        self.get_account(account_number).unfreeze()
 
     def get_account(self, account_number: str) -> BankAccount:
         account = self._accounts.get(self._normalize_number(account_number))
@@ -242,12 +268,18 @@ class Bank:
                 f"{action}: операции недоступны с 00:00 до 05:00 (сейчас {now:%H:%M})"
             )
 
-    def _require_session(self, client_id: str) -> Client:
+    def _authorize(self, client_id: str, action: str, *, by_client: bool = True) -> None:
+        self._ensure_operating_hours(action, client_id)
+        if by_client:
+            self._require_session(client_id, action)
+
+    def _require_session(self, client_id: str, action: str = "операция") -> Client:
         client = self.get_client(client_id)
         if client.is_blocked:
+            self._flag(ActivityKind.BLOCKED_CLIENT_OPERATION, client_id, f"{action}: клиент заблокирован")
             raise ClientBlockedError(f"Клиент {client_id} заблокирован")
         if client_id not in self._sessions:
-            self._flag(ActivityKind.UNAUTHENTICATED_OPERATION, client_id, "операция без входа")
+            self._flag(ActivityKind.UNAUTHENTICATED_OPERATION, client_id, f"{action} без входа")
             raise AccessDeniedError("Сначала войдите: authenticate_client()")
         return client
 

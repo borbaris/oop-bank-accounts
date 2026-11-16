@@ -49,7 +49,7 @@ class SavingsAccount(BankAccount):
         return max(self._balance - self._min_balance, Decimal("0.00"))
 
     def withdraw(self, amount: Decimal | int | float | str) -> Decimal:
-        self._ensure_active()
+        self._start_operation("Снятие")
         value = self._validate_amount(amount)
         self._check_withdrawal_limit(value)
         self._ensure_funds(
@@ -61,22 +61,10 @@ class SavingsAccount(BankAccount):
         return self._balance
 
     def apply_monthly_interest(self) -> Decimal:
-        """Начислить проценты за месяц. Возвращает начисленную сумму."""
-        self._ensure_active()
+        self._start_operation("Начисление процентов", by_client=False)
         interest = (self._balance * self._monthly_rate).quantize(_CENT, ROUND_HALF_UP)
         self._balance += interest
         return interest
-
-    def close(self) -> None:
-        """Закрыть вклад: весь остаток, включая неснижаемый, выплачивается клиенту.
-
-        Без этого переопределения счёт с min_balance > 0 нельзя было бы закрыть:
-        базовый close() требует нулевой баланс, а withdraw() не даёт опуститься
-        ниже минимума.
-        """
-        self._ensure_active()
-        self._balance = Decimal("0.00")
-        self._status = AccountStatus.CLOSED
 
     def get_account_info(self) -> dict[str, Any]:
         info = super().get_account_info()

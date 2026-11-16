@@ -320,6 +320,126 @@ class OperatingHoursTests(BankTestCase):
         self.assertEqual(events[-1].timestamp, datetime(2026, 11, 13, 1, 15))
 
 
+class MoneyOperationsSecurityTests(BankTestCase):
+    def setUp(self):
+        super().setUp()
+        self.login()
+        self.acc = self.bank.open_account("CL-ANNA", balance=1_000)
+        self.sav = self.bank.open_account("CL-ANNA", "savings", balance=10_000, min_balance=1_000)
+        self.inv = self.bank.open_account("CL-ANNA", "investment", balance=1_000)
+        self.inv.invest("etf", 500)
+
+    def money_actions(self):
+        return {
+            "deposit": lambda: self.acc.deposit(10),
+            "withdraw": lambda: self.acc.withdraw(10),
+            "invest": lambda: self.inv.invest("bonds", 10),
+            "sell": lambda: self.inv.sell("etf", 10),
+            "interest": self.sav.apply_monthly_interest,
+            "close": lambda: self.acc.close(),
+        }
+
+    def snapshot(self):
+        return (self.acc.balance, self.sav.balance, self.inv.balance, self.inv.portfolio)
+
+    def test_night_blocks_direct_money_operations(self):
+        self.clock.now = datetime(2026, 11, 13, 2, 0)
+        before = self.snapshot()
+        for name, action in self.money_actions().items():
+            with self.subTest(op=name), self.assertRaises(OperatingHoursError):
+                action()
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn(ActivityKind.NIGHT_OPERATION, self.kinds())
+
+    def test_day_operations_work(self):
+        self.assertEqual(self.acc.deposit(10), D("1010.00"))
+        self.assertEqual(self.sav.apply_monthly_interest(), D("100.00"))
+
+    def test_blocked_client_cannot_use_old_account_object(self):
+        self.block_anna()
+        before = self.snapshot()
+        for name, action in self.money_actions().items():
+            if name == "interest":
+                continue
+            with self.subTest(op=name), self.assertRaises(ClientBlockedError):
+                action()
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn(ActivityKind.BLOCKED_CLIENT_OPERATION, self.kinds())
+
+    def test_logout_also_closes_access(self):
+        self.bank.logout("CL-ANNA")
+        with self.assertRaises(AccessDeniedError):
+            self.acc.withdraw(10)
+        self.assertEqual(self.acc.balance, D("1000.00"))
+
+    def test_interest_needs_no_login(self):
+        self.bank.logout("CL-ANNA")
+        self.assertEqual(self.sav.apply_monthly_interest(), D("100.00"))
+
+    def test_unfreeze_directly_at_night_is_blocked(self):
+        self.bank.freeze_account(self.acc.account_number)
+        self.clock.now = datetime(2026, 11, 13, 3, 0)
+        with self.assertRaises(OperatingHoursError):
+            self.acc.unfreeze()
+        self.assertIs(self.acc.status, AccountStatus.FROZEN)
+
+    def test_security_cannot_be_replaced(self):
+        with self.assertRaises(InvalidOperationError):
+            self.acc.attach_security(lambda action, by_client: None)
+
+
+class CloseWithRemainderTests(BankTestCase):
+    def setUp(self):
+        super().setUp()
+        self.login()
+        self.sav = self.bank.open_account("CL-ANNA", "savings", balance=10_000, min_balance=1_000)
+        self.main = self.bank.open_account("CL-ANNA", balance=500)
+
+    def test_savings_with_money_is_not_wiped(self):
+        with self.assertRaises(InvalidOperationError):
+            self.bank.close_account("CL-ANNA", self.sav.account_number)
+        self.assertEqual(self.sav.balance, D("10000.00"))
+        self.assertIs(self.sav.status, AccountStatus.ACTIVE)
+
+    def test_remainder_is_transferred(self):
+        moved = self.bank.close_account(
+            "CL-ANNA", self.sav.account_number, transfer_to=self.main.account_number
+        )
+        self.assertEqual(moved, D("10000.00"))
+        self.assertEqual(self.main.balance, D("10500.00"))
+        self.assertEqual(self.sav.balance, D("0.00"))
+        self.assertIs(self.sav.status, AccountStatus.CLOSED)
+        self.assertEqual(self.bank.get_total_balance(), {"RUB": D("10500.00")})
+
+    def test_bad_transfer_targets_change_nothing(self):
+        self.login("CL-OLEG", "oleg-pass")
+        olegs = self.bank.open_account("CL-OLEG")
+        usd = self.bank.open_account("CL-ANNA", currency="USD")
+        frozen = self.bank.open_account("CL-ANNA")
+        self.bank.freeze_account(frozen.account_number)
+        cases = {
+            "чужой": (olegs.account_number, AccessDeniedError),
+            "сам себе": (self.sav.account_number, InvalidOperationError),
+            "другая валюта": (usd.account_number, InvalidOperationError),
+            "заморожен": (frozen.account_number, InvalidOperationError),
+            "не существует": ("NOPE0000", AccountNotFoundError),
+        }
+        for label, (target, error) in cases.items():
+            with self.subTest(target=label), self.assertRaises(error):
+                self.bank.close_account("CL-ANNA", self.sav.account_number, transfer_to=target)
+        self.assertEqual(self.sav.balance, D("10000.00"))
+        self.assertIs(self.sav.status, AccountStatus.ACTIVE)
+
+    def test_overdraft_debt_blocks_closing(self):
+        prem = self.bank.open_account("CL-ANNA", "premium", balance=100)
+        prem.withdraw(1_000)
+        with self.assertRaises(InvalidOperationError):
+            self.bank.close_account(
+                "CL-ANNA", prem.account_number, transfer_to=self.main.account_number
+            )
+        self.assertIs(prem.status, AccountStatus.ACTIVE)
+
+
 class ReportsTests(BankTestCase):
     def setUp(self):
         super().setUp()

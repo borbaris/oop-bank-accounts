@@ -69,7 +69,7 @@ class PremiumAccount(BankAccount):
         return self._balance < 0
 
     def withdraw(self, amount: Decimal | int | float | str) -> Decimal:
-        self._ensure_active()
+        self._start_operation("Снятие")
         value = self._validate_amount(amount)
         self._check_withdrawal_limit(value)
         total = value + self._withdrawal_fee

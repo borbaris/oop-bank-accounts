@@ -79,6 +79,7 @@ def main() -> None:
     print(f"  Счета Анны: {anna.account_numbers}")
 
     section("5. Заморозка, закрытие, чужие счета")
+    bank.authenticate_client("CL-OLEG", "oleg-pass-1")
     attempt("Заморозить счёт Олега", lambda: bank.freeze_account(o1.account_number))
     attempt("Снять с замороженного", lambda: o1.withdraw(100))
     attempt("Разморозить", lambda: bank.unfreeze_account(o1.account_number))
@@ -96,9 +97,31 @@ def main() -> None:
             lambda: bank.freeze_account(a2.account_number))
     attempt("02:30 — разморозить", lambda: bank.unfreeze_account(a2.account_number))
     clock.now = datetime(2026, 11, 13, 5, 0)
+    clock.now = datetime(2026, 11, 13, 2, 30)
+    attempt("02:30 — пополнить напрямую a3.deposit(100)", lambda: a3.deposit(100))
+    attempt("02:30 — проценты по вкладу", a2.apply_monthly_interest)
+    clock.now = datetime(2026, 11, 13, 5, 0)
     attempt("05:00 — разморозить", lambda: bank.unfreeze_account(a2.account_number))
 
-    section("7. Поиск счетов")
+    section("7. Заблокированный клиент и старый объект счёта")
+    for i in range(1, 4):
+        attempt(f"Олег, неверный пароль #{i}",
+                lambda: bank.authenticate_client("CL-OLEG", "wrong"))
+    attempt("Олег снимает через сохранённый o1", lambda: o1.withdraw(1_000))
+    attempt("Олег пополняет o2", lambda: o2.deposit(10))
+    attempt("Разблокировать Олега", lambda: bank.unblock_client("CL-OLEG"))
+
+    section("8. Закрытие вклада с остатком")
+    a4 = bank.open_account("CL-ANNA", "bank")
+    attempt("Закрыть вклад без transfer_to", lambda: bank.close_account("CL-ANNA", a2.account_number))
+    print(f"  Вклад после попытки: {money(a2.balance)} — деньги на месте")
+    attempt("Остаток на счёт в USD", lambda: bank.close_account(
+        "CL-ANNA", a2.account_number, transfer_to=a3.account_number))
+    attempt("Закрыть вклад, остаток → новый счёт", lambda: bank.close_account(
+        "CL-ANNA", a2.account_number, transfer_to=a4.account_number))
+    print(f"  Новый счёт: {a4}")
+
+    section("9. Поиск счетов")
     queries = {
         "все счета Анны": {"client_id": "CL-ANNA"},
         "в долларах": {"currency": "USD"},
@@ -111,7 +134,7 @@ def main() -> None:
         numbers = ", ".join(f"{type(a).__name__} {a.masked_number}" for a in found) or "—"
         print(f"  {label:>20}: {numbers}")
 
-    section("8. Итоги банка")
+    section("10. Итоги банка")
     for currency, total in bank.get_total_balance().items():
         print(f"  Всего в {currency}: {money(total)}")
     for currency in ("RUB", "USD"):
@@ -119,11 +142,11 @@ def main() -> None:
         for place, (client, total) in enumerate(bank.get_clients_ranking(currency), start=1):
             print(f"    {place}. {client.full_name} — {money(total)}")
 
-    section("9. Журнал подозрительных действий")
+    section("11. Журнал подозрительных действий")
     for event in bank.suspicious_activities:
         print(f"  {event}")
 
-    section("10. Разблокировка сотрудником")
+    section("12. Разблокировка сотрудником")
     attempt("Разблокировать Марию", lambda: bank.unblock_client("CL-MARIA"))
     attempt("Мария входит", lambda: bank.authenticate_client("CL-MARIA", "maria2000"))
     print(f"\n  {bank}")

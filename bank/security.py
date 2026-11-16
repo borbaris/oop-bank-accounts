@@ -17,6 +17,7 @@ class ActivityKind(StrEnum):
     BLOCKED_CLIENT_LOGIN = "blocked_client_login"
     UNKNOWN_CLIENT_LOGIN = "unknown_client_login"
     UNAUTHENTICATED_OPERATION = "unauthenticated_operation"
+    BLOCKED_CLIENT_OPERATION = "blocked_client_operation"
     FOREIGN_ACCOUNT_ACCESS = "foreign_account_access"
     NIGHT_OPERATION = "night_operation"
 

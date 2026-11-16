@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -18,6 +19,7 @@ from .exceptions import (
 
 _CENT = Decimal("0.01")
 _ACCOUNT_NUMBER_RE = re.compile(r"[A-Z0-9]{4,34}")
+SecurityCheck = Callable[[str, bool], None]
 
 
 class AccountStatus(StrEnum):
@@ -97,6 +99,7 @@ class AbstractAccount(ABC):
         self._status = AccountStatus.parse(status)
         if self._status is AccountStatus.CLOSED and self._balance != 0:
             raise InvalidOperationError("Закрытый счёт не может иметь ненулевой баланс")
+        self._security: SecurityCheck | None = None
 
     @property
     def account_number(self) -> str:
@@ -137,19 +140,64 @@ class AbstractAccount(ABC):
         self._status = AccountStatus.FROZEN
 
     def unfreeze(self) -> None:
+        self._check_security("Разморозка счёта", by_client=False)
         self._ensure_not_closed()
         if self._status is not AccountStatus.FROZEN:
             raise InvalidOperationError(f"Счёт {self.masked_number} не заморожен")
         self._status = AccountStatus.ACTIVE
 
     def close(self) -> None:
-        self._ensure_active()
+        """Закрыть пустой счёт. Если деньги есть — ошибка, ничего не теряется."""
+        self._start_operation("Закрытие счёта")
+        self._ensure_can_close()
         if self._balance != 0:
             raise InvalidOperationError(
                 f"Нельзя закрыть счёт {self.masked_number} с ненулевым балансом "
-                f"({self._balance}) — сначала снимите средства"
+                f"({self._balance}) — сначала снимите средства или используйте "
+                f"close_with_payout()"
             )
         self._status = AccountStatus.CLOSED
+
+    def close_with_payout(self) -> Decimal:
+        """Закрыть счёт и выдать весь остаток (в т.ч. неснижаемый). Возвращает сумму.
+
+        Деньги не пропадают: сумма возвращается вызывающему коду.
+        В банке это делает Bank.close_account(..., transfer_to=...) — переводит
+        её на другой счёт клиента.
+        """
+        self._start_operation("Закрытие счёта")
+        self._ensure_can_close()
+        if self._balance < 0:
+            raise InvalidOperationError(
+                f"Нельзя закрыть счёт {self.masked_number}: долг {-self._balance} — "
+                f"сначала погасите его"
+            )
+        payout = self._balance
+        self._balance = Decimal("0.00")
+        self._status = AccountStatus.CLOSED
+        return payout
+
+    def attach_security(self, check: SecurityCheck) -> None:
+        """Банк подключает свою проверку (время, сессия, блокировка клиента).
+
+        Подключить можно один раз — отключить или подменить нельзя.
+        Счёт без банка (дни 1–2) работает без этой проверки.
+        """
+        if self._security is not None:
+            raise InvalidOperationError(f"Счёт {self.masked_number} уже подключён к банку")
+        self._security = check
+
+    def _check_security(self, action: str, *, by_client: bool = True) -> None:
+        if self._security is not None:
+            self._security(action, by_client)
+
+    def _start_operation(self, action: str, *, by_client: bool = True) -> None:
+        """Вызывается первой строкой в каждом методе, который меняет счёт."""
+        self._check_security(action, by_client=by_client)
+        self._ensure_active()
+
+    def _ensure_can_close(self) -> None:
+        """Доп. условия закрытия для наследников (например, пустой портфель)."""
 
     def _ensure_not_closed(self) -> None:
         if self._status is AccountStatus.CLOSED:
@@ -283,13 +331,13 @@ class BankAccount(AbstractAccount):
         return self._balance
 
     def deposit(self, amount: Decimal | int | float | str) -> Decimal:
-        self._ensure_active()
+        self._start_operation("Пополнение")
         value = self._validate_amount(amount)
         self._balance += value
         return self._balance
 
     def withdraw(self, amount: Decimal | int | float | str) -> Decimal:
-        self._ensure_active()
+        self._start_operation("Снятие")
         value = self._validate_amount(amount)
         self._check_withdrawal_limit(value)
         self._ensure_funds(value, available=self._balance)

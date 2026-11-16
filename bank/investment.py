@@ -72,8 +72,7 @@ class InvestmentAccount(BankAccount):
         return self._balance + self.invested_total
     
     def invest(self, asset_type: AssetType | str, amount: Any) -> Decimal:
-        """Вложить свободные деньги в актив. Возвращает новую сумму в активе."""
-        self._ensure_active()
+        self._start_operation("Покупка актива")
         asset = AssetType.parse(asset_type)
         value = self._validate_amount(amount)
         self._ensure_funds(value, available=self._balance, hint="свободные средства")
@@ -82,8 +81,7 @@ class InvestmentAccount(BankAccount):
         return self._portfolio[asset]
 
     def sell(self, asset_type: AssetType | str, amount: Any) -> Decimal:
-        """Вывести деньги из актива в свободные. Возвращает остаток в активе."""
-        self._ensure_active()
+        self._start_operation("Продажа актива")
         asset = AssetType.parse(asset_type)
         value = self._validate_amount(amount)
         held = self._portfolio[asset]
@@ -99,7 +97,7 @@ class InvestmentAccount(BankAccount):
         return self._portfolio[asset]
 
     def withdraw(self, amount: Decimal | int | float | str) -> Decimal:
-        self._ensure_active()
+        self._start_operation("Снятие")
         value = self._validate_amount(amount)
         self._check_withdrawal_limit(value)
         invested = self.invested_total
@@ -119,11 +117,6 @@ class InvestmentAccount(BankAccount):
     def project_yearly_growth(
         self, growth_rates: Mapping[AssetType | str, Decimal | int | float | str]
     ) -> GrowthProjection:
-        """Ожидаемый годовой прирост портфеля. Портфель не меняется.
-
-        growth_rates: {"stocks": 0.10, "bonds": 0.04, "etf": 0.07} — доли, 0.10 = 10%.
-        Ставка нужна для каждого актива, в котором есть деньги.
-        """
         rates = self._parse_growth_rates(growth_rates)
 
         by_asset: dict[AssetType, Decimal] = {}
@@ -164,13 +157,12 @@ class InvestmentAccount(BankAccount):
             )
         return rates
 
-    def close(self) -> None:
+    def _ensure_can_close(self) -> None:
         if self.invested_total:
             raise InvalidOperationError(
                 f"Нельзя закрыть счёт {self.masked_number}: в портфеле "
                 f"{self._money(self.invested_total)} — сначала продайте активы"
             )
-        super().close()
 
     def get_account_info(self) -> dict[str, Any]:
         info = super().get_account_info()

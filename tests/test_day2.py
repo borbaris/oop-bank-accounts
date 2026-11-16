@@ -83,8 +83,13 @@ class SavingsAccountTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(InvalidOperationError):
                 SavingsAccount("Анна", **kwargs)
 
-    def test_close_pays_out_everything(self):
-        self.acc.close()
+    def test_close_never_loses_money(self):
+        with self.assertRaises(InvalidOperationError):
+            self.acc.close()
+        self.assertEqual(self.acc.balance, D("10000.00"))
+        self.assertIs(self.acc.status, AccountStatus.ACTIVE)
+
+        self.assertEqual(self.acc.close_with_payout(), D("10000.00"))
         self.assertIs(self.acc.status, AccountStatus.CLOSED)
         self.assertEqual(self.acc.balance, D("0.00"))
         with self.assertRaises(AccountClosedError):
