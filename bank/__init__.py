@@ -16,13 +16,25 @@ from .exceptions import (
     InsufficientFundsError,
     InvalidOperationError,
     OperatingHoursError,
+    TransactionError,
+    TransactionNotFoundError,
+    TransientTransactionError,
     UnderageClientError,
     WithdrawalLimitExceededError,
 )
+from .exchange import DEMO_EXCHANGE_RATES, CurrencyConverter
 from .investment import DEMO_GROWTH_RATES, AssetType, GrowthProjection, InvestmentAccount
 from .premium import PremiumAccount
+from .processor import ProcessingError, TransactionProcessor
 from .savings import SavingsAccount
 from .security import ActivityKind, SuspiciousActivity
+from .transaction_queue import TransactionQueue
+from .transactions import (
+    Transaction,
+    TransactionPriority,
+    TransactionStatus,
+    TransactionType,
+)
 
 __all__ = [
     "AbstractAccount",
@@ -45,6 +57,8 @@ __all__ = [
     "ClientNotFoundError",
     "ClientStatus",
     "Currency",
+    "CurrencyConverter",
+    "DEMO_EXCHANGE_RATES",
     "DEMO_GROWTH_RATES",
     "GrowthProjection",
     "InsufficientFundsError",
@@ -53,8 +67,18 @@ __all__ = [
     "OperatingHoursError",
     "Owner",
     "PremiumAccount",
+    "ProcessingError",
     "SavingsAccount",
     "SuspiciousActivity",
+    "Transaction",
+    "TransactionError",
+    "TransactionNotFoundError",
+    "TransactionPriority",
+    "TransactionProcessor",
+    "TransactionQueue",
+    "TransactionStatus",
+    "TransactionType",
+    "TransientTransactionError",
     "UnderageClientError",
     "WithdrawalLimitExceededError",
 ]

@@ -93,3 +93,15 @@ class AccessDeniedError(ClientError):
 
 class OperatingHoursError(BankError):
     """Операция запрещена в ночное время (00:00–05:00)."""
+
+
+class TransactionError(BankError):
+    """Ошибка транзакции: неверные данные, повторная отмена и т.п."""
+
+
+class TransactionNotFoundError(TransactionError):
+    """Транзакции с таким ID нет в очереди."""
+
+
+class TransientTransactionError(TransactionError):
+    """Временный сбой (например, внешний банк не ответил) — операцию можно повторить."""

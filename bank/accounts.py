@@ -60,6 +60,17 @@ class Currency(StrEnum):
         raise ValueError(f"Неподдерживаемая валюта {value!r}. Допустимые: {allowed}")
 
 
+def normalize_account_number(number: Any) -> str:
+    if not isinstance(number, str):
+        raise TypeError(f"Номер счёта должен быть строкой, получено {type(number).__name__}")
+    normalized = "".join(number.split()).upper()
+    if not _ACCOUNT_NUMBER_RE.fullmatch(normalized):
+        raise ValueError(
+            f"Некорректный номер счёта {number!r}: нужно 4–34 латинских буквы/цифры"
+        )
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class Owner:
     """Данные владельца счёта."""
@@ -262,17 +273,7 @@ class AbstractAccount(ABC):
 
     @staticmethod
     def _validate_account_number(number: Any) -> str:
-        if not isinstance(number, str):
-            raise TypeError(
-                f"Номер счёта должен быть строкой, получено {type(number).__name__}"
-            )
-        normalized = "".join(number.split()).upper()
-        if not _ACCOUNT_NUMBER_RE.fullmatch(normalized):
-            raise ValueError(
-                f"Некорректный номер счёта {number!r}: нужно 4–34 латинских букв/цифр"
-            )
-        return normalized
-        
+        return normalize_account_number(number)
 
     @staticmethod
     def _validate_owner(owner: Any) -> Owner:
@@ -327,7 +328,10 @@ class BankAccount(AbstractAccount):
 
     @property
     def total_value(self) -> Decimal:
-        """Сколько всего денег клиента на счёте. InvestmentAccount добавляет портфель."""
+        return self._balance
+
+    @property
+    def available_balance(self) -> Decimal:
         return self._balance
 
     def deposit(self, amount: Decimal | int | float | str) -> Decimal:
@@ -356,7 +360,15 @@ class BankAccount(AbstractAccount):
             "withdrawal_limit": self.withdrawal_limit,
         }
 
-    # --- защищённые проверки для наследников ---------------------------------
+    def _debit(self, amount: Decimal) -> None:
+        self._start_operation("Списание по переводу", by_client=False)
+        self._ensure_funds(amount, available=self.available_balance)
+        self._balance -= amount
+
+    def _credit(self, amount: Decimal) -> None:
+        self._start_operation("Зачисление по переводу", by_client=False)
+        self._balance += amount
+
 
     def _check_withdrawal_limit(self, amount: Decimal) -> None:
         if amount > self.withdrawal_limit:
@@ -376,7 +388,6 @@ class BankAccount(AbstractAccount):
             )
 
     def _money(self, value: Decimal) -> str:
-        """Сумма с валютой для сообщений: "1 000.00 RUB"."""
         return f"{self._format_money(value)} {self._currency.value}"
 
     def __str__(self) -> str:

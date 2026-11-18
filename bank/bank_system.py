@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from .accounts import AccountStatus, BankAccount, Currency
+from .accounts import AccountStatus, BankAccount, Currency, normalize_account_number
 from .client import Client
 from .exceptions import (
     AccessDeniedError,
@@ -16,6 +16,8 @@ from .exceptions import (
     ClientNotFoundError,
     InvalidOperationError,
     OperatingHoursError,
+    TransactionError,
+    TransactionNotFoundError,
 )
 from .investment import InvestmentAccount
 from .premium import PremiumAccount
@@ -28,6 +30,7 @@ from .security import (
     validate_password,
     verify_password,
 )
+from .transactions import Transaction, TransactionPriority, TransactionType
 
 
 class Bank:
@@ -57,10 +60,23 @@ class Bank:
         self._failed_logins: dict[str, int] = {}
         self._sessions: set[str] = set()
         self._suspicious: list[SuspiciousActivity] = []
+        self._transactions: dict[str, Transaction] = {}
 
     @property
     def name(self) -> str:
         return self._name
+
+    def now(self) -> datetime:
+        return self._clock()
+
+    def is_operating_hours(self, at: datetime | None = None) -> bool:
+        at = at or self._clock()
+        return not (self.NIGHT_START <= at.time() < self.NIGHT_END)
+
+    def next_opening(self, at: datetime | None = None) -> datetime:
+        at = at or self._clock()
+        opening = datetime.combine(at.date(), self.NIGHT_END)
+        return opening if at < opening else opening + timedelta(days=1)
 
     def add_client(self, client: Client, password: str) -> Client:
         if not isinstance(client, Client):
@@ -257,12 +273,63 @@ class Bank:
     def get_suspicious_activities(self, client_id: str | None = None) -> list[SuspiciousActivity]:
         return [a for a in self._suspicious if client_id is None or a.client_id == client_id]
 
+    def flag_suspicious(self, kind: ActivityKind, client_id: str | None, details: str) -> None:
+        self._flag(kind, client_id, details)
+
+    def create_transfer(
+        self,
+        client_id: str,
+        sender: str,
+        receiver: str,
+        amount: Decimal | int | float | str,
+        *,
+        currency: Currency | str | None = None,
+        priority: TransactionPriority | str = TransactionPriority.NORMAL,
+        scheduled_at: datetime | None = None,
+        description: str = "",
+    ) -> Transaction:
+        self._authorize(client_id, "Создание перевода")
+        source = self._get_owned_account(client_id, sender)
+        target = normalize_account_number(receiver)
+        tx_type = (
+            TransactionType.INTERNAL_TRANSFER if target in self._accounts
+            else TransactionType.EXTERNAL_TRANSFER
+        )
+        now = self._clock()
+        if scheduled_at is not None and scheduled_at < now:
+            raise TransactionError(f"Нельзя запланировать перевод в прошлое ({scheduled_at})")
+
+        tx = Transaction(
+            tx_type, amount, currency or source.currency,
+            sender=source.account_number, receiver=target, initiator_id=client_id,
+            created_at=now, priority=priority, scheduled_at=scheduled_at,
+            description=description,
+        )
+        self._transactions[tx.transaction_id] = tx
+        return tx
+
+    def is_authorized_transaction(self, tx: Transaction) -> bool:
+        return self._transactions.get(getattr(tx, "transaction_id", None)) is tx
+
+    def get_transaction(self, transaction_id: str) -> Transaction:
+        tx = self._transactions.get(transaction_id)
+        if tx is None:
+            raise TransactionNotFoundError(f"Транзакция {transaction_id!r} не найдена")
+        return tx
+
+    @property
+    def transactions(self) -> tuple[Transaction, ...]:
+        return tuple(self._transactions.values())
+
+    def require_session(self, client_id: str, action: str = "операция") -> Client:
+        return self._require_session(client_id, action)
+
     def _flag(self, kind: ActivityKind, client_id: str | None, details: str) -> None:
         self._suspicious.append(SuspiciousActivity(self._clock(), kind, client_id, details))
 
     def _ensure_operating_hours(self, action: str, client_id: str | None) -> None:
         now = self._clock()
-        if self.NIGHT_START <= now.time() < self.NIGHT_END:
+        if not self.is_operating_hours(now):
             self._flag(ActivityKind.NIGHT_OPERATION, client_id, f"{action} в {now:%H:%M}")
             raise OperatingHoursError(
                 f"{action}: операции недоступны с 00:00 до 05:00 (сейчас {now:%H:%M})"
