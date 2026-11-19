@@ -22,6 +22,7 @@ class ActivityKind(StrEnum):
     FOREIGN_TRANSACTION_CANCEL = "foreign_transaction_cancel"
     FOREIGN_ACCOUNT_ACCESS = "foreign_account_access"
     NIGHT_OPERATION = "night_operation"
+    HIGH_RISK_OPERATION = "high_risk_operation"
 
 
 @dataclass(frozen=True, slots=True)

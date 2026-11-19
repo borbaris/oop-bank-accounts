@@ -7,6 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, ClassVar
 
 from .accounts import _CENT, AccountStatus, BankAccount, Currency
+from .audit import AuditLevel
 from .exceptions import (
     AccessDeniedError,
     AccountClosedError,
@@ -106,6 +107,10 @@ class TransactionProcessor:
                 return tx
             tx._start_attempt(now)
             self._execute(tx, now)
+            self._bank.audit.log(
+                AuditLevel.INFO, "transaction_completed", f"{tx.amount} {tx.currency}",
+                client_id=tx.initiator_id, transaction_id=tx.transaction_id,
+            )
         except TransientTransactionError as exc:
             if tx.attempts < self.MAX_ATTEMPTS:
                 retry_at = now + self.RETRY_DELAY * tx.attempts
@@ -205,6 +210,14 @@ class TransactionProcessor:
     def _record_error(
         self, tx: Transaction, now: datetime, exc: Exception, retry_at: datetime | None = None
     ) -> None:
-        self._errors.append(
-            ProcessingError(now, tx.transaction_id, tx.attempts, type(exc).__name__, str(exc), retry_at)
+        error = ProcessingError(now, tx.transaction_id, tx.attempts, type(exc).__name__, str(exc), retry_at)
+        self._errors.append(error)
+        # Повтор — предупреждение, окончательный отказ — ошибка.
+        level, event = (
+            (AuditLevel.WARNING, "transaction_retry") if retry_at
+            else (AuditLevel.ERROR, "transaction_failed")
+        )
+        self._bank.audit.log(
+            level, event, f"{error.error_type}: {error.message}",
+            client_id=tx.initiator_id, transaction_id=tx.transaction_id,
         )

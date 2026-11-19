@@ -87,7 +87,7 @@ def main() -> None:
         ("срочный", "CL-ANNA", a_rub, o_prem, 1_000, {"priority": "urgent"}),
         ("отложен на 18:00", "CL-OLEG", o_rub, a_rub, 500, {"scheduled_at": evening}),
         ("будет отменён", "CL-ANNA", a_rub, o_rub, 777, {}),
-        ("ночной (02:00)", "CL-ANNA", a_rub, o_usd, 900, {"scheduled_at": night}),
+        ("ночной (02:00)", "CL-OLEG", o_rub, a_usd, 900, {"scheduled_at": night}),
     ]
     txs = []
     for i, (label, client, sender, receiver, amount, options) in enumerate(plan, start=1):

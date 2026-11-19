@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 from .accounts import AccountStatus, BankAccount, Currency, normalize_account_number
+from .audit import AuditLevel, AuditLog
 from .client import Client
 from .exceptions import (
     AccessDeniedError,
@@ -21,6 +23,7 @@ from .exceptions import (
 )
 from .investment import InvestmentAccount
 from .premium import PremiumAccount
+from .risk import RiskAnalyzer, RiskAssessment, RiskLevel
 from .savings import SavingsAccount
 from .security import (
     PBKDF2_ITERATIONS,
@@ -46,7 +49,26 @@ class Bank:
         "investment": InvestmentAccount,
     }
 
-    def __init__(self, name: str, *, clock: Callable[[], datetime] = datetime.now) -> None:
+    RISK_ANALYZER: ClassVar[type[RiskAnalyzer]] = RiskAnalyzer
+    # Самые опасные события — CRITICAL в аудите, остальные подозрительные — WARNING.
+    CRITICAL_ACTIVITIES: ClassVar[frozenset[ActivityKind]] = frozenset({
+        ActivityKind.CLIENT_BLOCKED,
+        ActivityKind.FORGED_TRANSACTION,
+        ActivityKind.HIGH_RISK_OPERATION,
+    })
+    RISK_TO_AUDIT: ClassVar[dict[RiskLevel, AuditLevel]] = {
+        RiskLevel.LOW: AuditLevel.INFO,
+        RiskLevel.MEDIUM: AuditLevel.WARNING,
+        RiskLevel.HIGH: AuditLevel.CRITICAL,
+    }
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        clock: Callable[[], datetime] = datetime.now,
+        audit_path: str | Path | None = None,
+    ) -> None:
         """clock — откуда банк берёт текущее время. В тестах подменяем на фиксированное."""
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Название банка должно быть непустой строкой")
@@ -61,10 +83,27 @@ class Bank:
         self._sessions: set[str] = set()
         self._suspicious: list[SuspiciousActivity] = []
         self._transactions: dict[str, Transaction] = {}
+        self._audit = AuditLog(audit_path, clock=clock)
+        self._risk = self.RISK_ANALYZER(self)
+        self._assessments: dict[str, RiskAssessment] = {}
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def audit(self) -> AuditLog:
+        return self._audit
+
+    @property
+    def risk_assessments(self) -> tuple[RiskAssessment, ...]:
+        return tuple(self._assessments.values())
+
+    def get_risk_assessment(self, transaction_id: str) -> RiskAssessment:
+        assessment = self._assessments.get(transaction_id)
+        if assessment is None:
+            raise TransactionNotFoundError(f"Нет оценки риска для {transaction_id!r}")
+        return assessment
 
     def now(self) -> datetime:
         return self._clock()
@@ -306,7 +345,22 @@ class Bank:
             description=description,
         )
         self._transactions[tx.transaction_id] = tx
+        self._check_risk(tx)
         return tx
+
+    def _check_risk(self, tx: Transaction) -> None:
+        """Каждая транзакция оценивается при создании. HIGH — сразу failed, деньги не тронуты."""
+        assessment = self._risk.assess(tx)
+        self._assessments[tx.transaction_id] = assessment
+        self._audit.log(
+            self.RISK_TO_AUDIT[assessment.level], "risk_assessment", str(assessment),
+            client_id=tx.initiator_id, transaction_id=tx.transaction_id,
+        )
+        if assessment.level is RiskLevel.HIGH:
+            reason = f"заблокировано риск-анализом: {'; '.join(assessment.reasons)}"
+            tx._fail(self._clock(), reason)
+            self._flag(ActivityKind.HIGH_RISK_OPERATION, tx.initiator_id,
+                       f"{tx.transaction_id}: {reason}")
 
     def is_authorized_transaction(self, tx: Transaction) -> bool:
         return self._transactions.get(getattr(tx, "transaction_id", None)) is tx
@@ -326,6 +380,8 @@ class Bank:
 
     def _flag(self, kind: ActivityKind, client_id: str | None, details: str) -> None:
         self._suspicious.append(SuspiciousActivity(self._clock(), kind, client_id, details))
+        level = AuditLevel.CRITICAL if kind in self.CRITICAL_ACTIVITIES else AuditLevel.WARNING
+        self._audit.log(level, kind.value, details, client_id=client_id)
 
     def _ensure_operating_hours(self, action: str, client_id: str | None) -> None:
         now = self._clock()

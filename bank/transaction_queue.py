@@ -15,6 +15,7 @@ class TransactionQueue:
     def __init__(self, bank: Bank) -> None:
         self._bank = bank
         self._items: dict[str, tuple[int, Transaction]] = {}
+        self._counter = itertools.count()
 
     def add(self, tx: Transaction) -> Transaction:
         if not self._bank.is_authorized_transaction(tx):

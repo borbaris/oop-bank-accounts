@@ -388,7 +388,7 @@ class TenTransactionsScenarioTests(Day4TestCase):
             self.transfer(self.a_usd, self.o_rub, 50),                             # 3 конвертация
             self.transfer(self.o_prem, self.a_rub, 3_000, client="CL-OLEG"),       # 4 овердрафт
             self.transfer(self.a_sav, self.a_rub, 9_000),                          # 5 мин. остаток → отказ
-            self.transfer(self.a_rub, self.o_rub, 100_000),                        # 6 нет денег → отказ
+            self.transfer(self.a_rub, self.o_rub, 50_000),                         # 6 нет денег → отказ
             self.transfer(self.a_rub, self.o_prem, 500, priority="urgent"),        # 7 первым
             self.transfer(self.a_rub, self.o_rub, 300, scheduled_at=later),        # 8 отложен
             self.transfer(self.o_rub, self.a_rub, 100, client="CL-OLEG"),          # 9 отмена
