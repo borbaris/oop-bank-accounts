@@ -131,6 +131,10 @@ class Bank:
         self._failed_logins[client.client_id] = 0
         return client
 
+    @property
+    def clients(self) -> tuple[Client, ...]:
+        return tuple(self._clients.values())
+
     def get_client(self, client_id: str) -> Client:
         client = self._clients.get(client_id)
         if client is None:
@@ -138,7 +142,6 @@ class Bank:
         return client
 
     def unblock_client(self, client_id: str) -> None:
-        """Ручная разблокировка сотрудником банка."""
         client = self.get_client(client_id)
         client.unblock()
         self._failed_logins[client_id] = 0

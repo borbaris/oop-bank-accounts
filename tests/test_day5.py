@@ -247,7 +247,7 @@ class AuditIntegrationTests(Day5TestCase):
         ok = self.pay(self.a_rub, self.a_big, 100)
         bad = self.pay(self.a_rub, self.a_big, 50_000)  # денег нет
         self.assertEqual([e.event for e in self.bank.audit.filter(transaction_id=ok.transaction_id)],
-                         ["risk_assessment", "transaction_completed"])
+                         ["risk_assessment", "transaction_queued", "transaction_completed"])
         [error] = self.bank.audit.filter(transaction_id=bad.transaction_id, min_level=AuditLevel.ERROR)
         self.assertEqual(error.event, "transaction_failed")
         self.assertTrue(error.message.startswith("InsufficientFundsError"))

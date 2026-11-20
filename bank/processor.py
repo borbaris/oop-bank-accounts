@@ -103,7 +103,13 @@ class TransactionProcessor:
         try:
             self._check_authorization(tx)
             if not self._bank.is_operating_hours(now):
-                tx._reschedule(now, self._bank.next_opening(now), "ночью операции запрещены")
+                opening = self._bank.next_opening(now)
+                tx._reschedule(now, opening, "ночью операции запрещены")
+                self._bank.audit.log(
+                    AuditLevel.INFO, "transaction_deferred",
+                    f"ночь — перенесена на {opening:%d.%m %H:%M}",
+                    client_id=tx.initiator_id, transaction_id=tx.transaction_id,
+                )
                 return tx
             tx._start_attempt(now)
             self._execute(tx, now)

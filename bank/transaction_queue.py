@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 from typing import TYPE_CHECKING
 
+from .audit import AuditLevel
 from .exceptions import AccessDeniedError, TransactionError, TransactionNotFoundError
 from .security import ActivityKind
 from .transactions import Transaction, TransactionStatus
@@ -16,6 +17,7 @@ class TransactionQueue:
         self._bank = bank
         self._items: dict[str, tuple[int, Transaction]] = {}
         self._counter = itertools.count()
+        self._seen: set[str] = set()
 
     def add(self, tx: Transaction) -> Transaction:
         if not self._bank.is_authorized_transaction(tx):
@@ -29,6 +31,14 @@ class TransactionQueue:
         if tx.transaction_id in self._items:
             raise TransactionError(f"Транзакция {tx.transaction_id} уже в очереди")
         self._items[tx.transaction_id] = (next(self._counter), tx)
+        if tx.transaction_id not in self._seen:
+            self._seen.add(tx.transaction_id)
+            self._bank.audit.log(
+                AuditLevel.INFO, "transaction_queued",
+                f"{tx.amount} {tx.currency}, приоритет {tx.priority.name.lower()}, "
+                f"к выполнению с {tx.scheduled_at:%d.%m %H:%M}",
+                client_id=tx.initiator_id, transaction_id=tx.transaction_id,
+            )
         return tx
 
     def cancel(
@@ -44,6 +54,10 @@ class TransactionQueue:
             raise AccessDeniedError("Отменить можно только свою транзакцию")
         tx._cancel(self._bank.now(), reason)
         del self._items[transaction_id]
+        self._bank.audit.log(
+            AuditLevel.INFO, "transaction_cancelled", reason,
+            client_id=client_id, transaction_id=transaction_id,
+        )
         return tx
 
     def get(self, transaction_id: str) -> Transaction:
