@@ -57,13 +57,13 @@ class SavingsAccount(BankAccount):
             available=self.available_balance,
             hint=f"неснижаемый остаток {self._money(self._min_balance)}",
         )
-        self._balance -= value
+        self._change_balance(-value, "Снятие")
         return self._balance
 
     def apply_monthly_interest(self) -> Decimal:
         self._start_operation("Начисление процентов", by_client=False)
         interest = (self._balance * self._monthly_rate).quantize(_CENT, ROUND_HALF_UP)
-        self._balance += interest
+        self._change_balance(interest, "Начисление процентов")
         return interest
 
     def get_account_info(self) -> dict[str, Any]:

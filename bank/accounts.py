@@ -4,7 +4,8 @@ import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -20,6 +21,15 @@ from .exceptions import (
 _CENT = Decimal("0.01")
 _ACCOUNT_NUMBER_RE = re.compile(r"[A-Z0-9]{4,34}")
 SecurityCheck = Callable[[str, bool], None]
+Clock = Callable[[], datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceEntry:
+    timestamp: datetime
+    operation: str
+    change: Decimal
+    balance: Decimal
 
 
 class AccountStatus(StrEnum):
@@ -111,6 +121,10 @@ class AbstractAccount(ABC):
         if self._status is AccountStatus.CLOSED and self._balance != 0:
             raise InvalidOperationError("Закрытый счёт не может иметь ненулевой баланс")
         self._security: SecurityCheck | None = None
+        self._clock: Clock = datetime.now
+        self._history = [
+            BalanceEntry(self._clock(), "Открытие счёта", self._balance, self._balance)
+        ]
 
     @property
     def account_number(self) -> str:
@@ -123,6 +137,10 @@ class AbstractAccount(ABC):
     @property
     def balance(self) -> Decimal:
         return self._balance
+
+    @property
+    def balance_history(self) -> tuple[BalanceEntry, ...]:
+        return tuple(self._history)
 
     @property
     def status(self) -> AccountStatus:
@@ -184,11 +202,11 @@ class AbstractAccount(ABC):
                 f"сначала погасите его"
             )
         payout = self._balance
-        self._balance = Decimal("0.00")
+        self._change_balance(-payout, "Закрытие с выплатой остатка")
         self._status = AccountStatus.CLOSED
         return payout
 
-    def attach_security(self, check: SecurityCheck) -> None:
+    def attach_security(self, check: SecurityCheck, *, clock: Clock | None = None) -> None:
         """Банк подключает свою проверку (время, сессия, блокировка клиента).
 
         Подключить можно один раз — отключить или подменить нельзя.
@@ -197,6 +215,14 @@ class AbstractAccount(ABC):
         if self._security is not None:
             raise InvalidOperationError(f"Счёт {self.masked_number} уже подключён к банку")
         self._security = check
+        if clock is not None:
+            self._clock = clock
+            if len(self._history) == 1:
+                self._history[0] = replace(self._history[0], timestamp=clock())
+
+    def _change_balance(self, change: Decimal, operation: str) -> None:
+        self._balance += change
+        self._history.append(BalanceEntry(self._clock(), operation, change, self._balance))
 
     def _check_security(self, action: str, *, by_client: bool = True) -> None:
         if self._security is not None:
@@ -337,7 +363,7 @@ class BankAccount(AbstractAccount):
     def deposit(self, amount: Decimal | int | float | str) -> Decimal:
         self._start_operation("Пополнение")
         value = self._validate_amount(amount)
-        self._balance += value
+        self._change_balance(value, "Пополнение")
         return self._balance
 
     def withdraw(self, amount: Decimal | int | float | str) -> Decimal:
@@ -345,7 +371,7 @@ class BankAccount(AbstractAccount):
         value = self._validate_amount(amount)
         self._check_withdrawal_limit(value)
         self._ensure_funds(value, available=self._balance)
-        self._balance -= value
+        self._change_balance(-value, "Снятие")
         return self._balance
 
     def get_account_info(self) -> dict[str, Any]:
@@ -363,11 +389,11 @@ class BankAccount(AbstractAccount):
     def _debit(self, amount: Decimal) -> None:
         self._start_operation("Списание по переводу", by_client=False)
         self._ensure_funds(amount, available=self.available_balance)
-        self._balance -= amount
+        self._change_balance(-amount, "Списание по переводу")
 
     def _credit(self, amount: Decimal) -> None:
         self._start_operation("Зачисление по переводу", by_client=False)
-        self._balance += amount
+        self._change_balance(amount, "Зачисление по переводу")
 
 
     def _check_withdrawal_limit(self, amount: Decimal) -> None:

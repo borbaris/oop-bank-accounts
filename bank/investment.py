@@ -76,7 +76,7 @@ class InvestmentAccount(BankAccount):
         asset = AssetType.parse(asset_type)
         value = self._validate_amount(amount)
         self._ensure_funds(value, available=self._balance, hint="свободные средства")
-        self._balance -= value
+        self._change_balance(-value, f"Покупка актива {asset.value}")
         self._portfolio[asset] += value
         return self._portfolio[asset]
 
@@ -93,7 +93,7 @@ class InvestmentAccount(BankAccount):
                 hint=f"вложено в {asset.value}",
             )
         self._portfolio[asset] -= value
-        self._balance += value
+        self._change_balance(value, f"Продажа актива {asset.value}")
         return self._portfolio[asset]
 
     def withdraw(self, amount: Decimal | int | float | str) -> Decimal:
@@ -111,7 +111,7 @@ class InvestmentAccount(BankAccount):
                 else None
             ),
         )
-        self._balance -= value
+        self._change_balance(-value, "Снятие")
         return self._balance
 
     def project_yearly_growth(

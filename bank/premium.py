@@ -61,7 +61,6 @@ class PremiumAccount(BankAccount):
 
     @property
     def available_balance(self) -> Decimal:
-        """Свои деньги + овердрафт."""
         return self._balance + self._overdraft_limit
 
     @property
@@ -81,7 +80,7 @@ class PremiumAccount(BankAccount):
                 f"овердрафт до {self._money(self._overdraft_limit)}"
             ),
         )
-        self._balance -= total
+        self._change_balance(-total, f"Снятие (вкл. комиссию {self._withdrawal_fee})")
         return self._balance
 
     def get_account_info(self) -> dict[str, Any]:

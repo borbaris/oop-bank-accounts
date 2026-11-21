@@ -69,7 +69,6 @@ class Bank:
         clock: Callable[[], datetime] = datetime.now,
         audit_path: str | Path | None = None,
     ) -> None:
-        """clock — откуда банк берёт текущее время. В тестах подменяем на фиксированное."""
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Название банка должно быть непустой строкой")
         self._name = name.strip()
@@ -200,7 +199,8 @@ class Bank:
             raise InvalidOperationError(f"Счёт {account.account_number} уже существует")
 
         account.attach_security(
-            lambda action, by_client: self._authorize(client_id, action, by_client=by_client)
+            lambda action, by_client: self._authorize(client_id, action, by_client=by_client),
+            clock=self._clock,
         )
         self._accounts[account.account_number] = account
         self._account_owner[account.account_number] = client_id

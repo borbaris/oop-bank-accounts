@@ -1,4 +1,4 @@
-from .accounts import AbstractAccount, AccountStatus, BankAccount, Currency, Owner
+from .accounts import AbstractAccount, AccountStatus, BalanceEntry, BankAccount, Currency, Owner
 from .audit import AuditEntry, AuditLevel, AuditLog
 from .bank_system import Bank
 from .client import Client, ClientStatus
@@ -43,6 +43,7 @@ from .reports import (
     total_balance,
     transaction_statistics,
 )
+from .report_builder import Report, ReportBuilder, ReportKind
 from .risk import RiskAnalyzer, RiskAssessment, RiskLevel
 from .savings import SavingsAccount
 from .security import ActivityKind, SuspiciousActivity
@@ -69,6 +70,7 @@ __all__ = [
     "AuditLevel",
     "AuditLog",
     "AuthenticationError",
+    "BalanceEntry",
     "Bank",
     "BankAccount",
     "BankError",
@@ -94,6 +96,9 @@ __all__ = [
     "Owner",
     "PremiumAccount",
     "ProcessingError",
+    "Report",
+    "ReportBuilder",
+    "ReportKind",
     "RiskAnalyzer",
     "RiskAssessment",
     "RiskLevel",
